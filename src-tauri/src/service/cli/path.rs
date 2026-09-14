@@ -36,29 +36,7 @@ const RC_FILES: [&str; 2] = [".zshrc", ".bashrc"];
 /// - Windows：`%LOCALAPPDATA%\deepseek-harness\bin`（用户级、不随应用数据目录变动）
 /// - Unix：`~/.local/bin`（XDG 约定，通常已在 PATH 中）
 pub fn get_bin_dir(app_handle: &AppHandle) -> PathBuf {
-    #[cfg(windows)]
-    {
-        std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .or_else(|| {
-                app_handle
-                    .path()
-                    .local_data_dir()
-                    .ok()
-                    .and_then(|d| d.parent().map(|p| p.to_path_buf()))
-            })
-            .unwrap_or_else(std::env::temp_dir)
-            .join(CLI_ROOT_DIR_NAME)
-            .join("bin")
-    }
-    #[cfg(not(windows))]
-    {
-        app_handle
-            .path()
-            .home_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(UNIX_BIN_DIR)
-    }
+    crate::config::get_bundle_dir(app_handle).join("bin")
 }
 
 /// 主 shim 文件路径（状态展示用）

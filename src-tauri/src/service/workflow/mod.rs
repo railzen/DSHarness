@@ -4,7 +4,6 @@ pub mod utils;
 pub(crate) mod win_spawn;
 
 use crate::config;
-use crate::service::download;
 use crate::service::workflow::utils::{is_port_in_use, spawn_output_readers};
 use std::collections::HashMap;
 
@@ -14,7 +13,6 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tauri::Manager;
 
 /// 启动守卫：并发调用 `launch` 时只允许一个真正拉起 dsh 进程
 static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
@@ -682,7 +680,7 @@ fn relaunch_via_shell_escape(app_handle: &tauri::AppHandle) {
 pub async fn start(app_handle: tauri::AppHandle) -> Result<(), String> {
     let setting = config::get_store_dat_setting(&app_handle);
     let node_binary_path = config::get_node_binary_path(&app_handle);
-    // 活动核心的入口：本地核心存在时优先本地（需求 3），否则预打包
+    // 核心入口固定在安装器交付的资源目录。
     let dsh_binary_path = crate::service::core::active_dsh_binary(&app_handle);
 
     if !setting.installed {
@@ -842,22 +840,25 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
     // 把服务实际使用的 node 路径显式交给子进程。先规范化为绝对路径，避免
     // 相对 PATH 条目在 Harness 工作目录下解析到错误位置。
     let node_abs =
-        std::fs::canonicalize(&node_binary_path).unwrap_or_else(|_| node_binary_path.clone());
+        dunce::canonicalize(&node_binary_path).unwrap_or_else(|_| node_binary_path.clone());
     envs.insert(
         "DSH_NODE".to_string(),
         node_abs.to_string_lossy().into_owned(),
     );
 
-    // 扩展 PATH，让 dsh 及其子进程能找到当前选定的 node。
-    if let Some(node_dir) = node_binary_path.parent() {
-        if let Some(existing_path) = std::env::var_os("PATH") {
-            let mut paths = vec![node_dir.to_path_buf()];
-            paths.extend(std::env::split_paths(&existing_path));
-            if let Ok(new_path) = std::env::join_paths(paths) {
-                envs.insert("PATH".to_string(), new_path.to_string_lossy().into_owned());
-            }
-        }
-    }
+    // 内置工具优先，PATH 缺失时仍可启动，不依赖用户安装的 Node/Git/PowerShell。
+    let bundle = config::get_bundle_dir(&app_handle);
+    let mut paths = vec![
+        bundle.join("node"),
+        bundle.join("bin"),
+        bundle.join("powershell"),
+        bundle.join("git/cmd"),
+    ];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths).map_err(|e| format!("BUNDLED_PATH_INVALID: {e}"))?;
+    envs.insert("PATH".into(), path.to_string_lossy().into_owned());
 
     // 日志文件（前端日志面板读取）。
     // 每次真实启动前轮转：只保留最近 3 次启动的日志，旧文件后退为
@@ -899,7 +900,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
             win_spawn::spawn_with_hidden_console_owned(
                 &node_binary_path,
                 &args,
-                // 全局 DSH 不一定存在应用私有 dependencies/dsh，工作目录使用已创建的 DSH_HOME。
+                // 工作目录使用可写的用户数据目录，安装目录保持只读。
                 Some(&dsh_home),
                 &envs,
             )
@@ -952,7 +953,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 cmd.arg("--no-open");
             }
             cmd.envs(&envs)
-                // 全局 DSH 不一定存在应用私有 dependencies/dsh，工作目录使用已创建的 DSH_HOME。
+                // 工作目录使用可写的用户数据目录，安装目录保持只读。
                 .current_dir(&dsh_home)
                 // 核心修正：提供一个空的 stdin 防止 setRawMode 报错
                 .stdin(Stdio::null())
@@ -1035,219 +1036,6 @@ pub fn stop_on_exit(app_handle: tauri::AppHandle, _port: u16) {
 /// 托盘硬退跳过 `RunEvent::Exit`，仍须先杀掉持有的 Harness。
 pub fn stop_owned_for_hard_exit() {
     terminate_owned_process();
-}
-
-/// 读取并校验安装包内随附的 pnpm tarball。
-///
-/// 资源不存在、读取失败或 SHA-256 不匹配时返回 None（只记日志），由调用方
-/// 退回联网下载；这里不把资源损坏当成致命错误，避免安装包被杀软/磁盘错误
-/// 篡改一个文件就让整个安装流程失败。
-fn read_bundled_pnpm<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
-    tracker: &download::ProgressTracker<'_, R>,
-) -> Option<Vec<u8>> {
-    let path = config::get_bundled_pnpm_tarball(app_handle)?;
-    log::info!("Using bundled pnpm tarball: {}", path.display());
-    let buffer = match fs::read(&path) {
-        Ok(buffer) => buffer,
-        Err(e) => {
-            log::warn!("Failed to read bundled pnpm tarball, falling back to download: {e}");
-            return None;
-        }
-    };
-    if let Err(e) = download::verify_sha256(&buffer, config::PNPM_SHA256) {
-        log::warn!("Bundled pnpm tarball rejected, falling back to download: {e}");
-        return None;
-    }
-    tracker.update(
-        100.0,
-        "已使用安装包内置的 pnpm，无需下载".to_string(),
-        format!("Loaded bundled pnpm from {}", path.display()),
-    );
-    Some(buffer)
-}
-
-/// 安装环境（Node.js 运行时 + pnpm + 官方 Harness Release 对应的 npm 包）。
-///
-/// 返回是否真正落盘更新了 Harness（dsh 任务实际下载并解压）；仅重装
-/// Node/pnpm 或全部任务被跳过时返回 false，供调用方决定是否重启页面。
-pub async fn install(
-    app_handle: &tauri::AppHandle,
-    mut dsh_latest: Option<download::LatestDshPkg>,
-) -> Result<bool, String> {
-    log::info!("Starting installation process");
-    // dsh 任务（index==2）实际安装时置 true
-    let mut dsh_updated = false;
-
-    // 安装前先停止本应用持有的 Harness 服务：运行中的 node 进程会把
-    // 原生模块 DLL（如 sharp 的 libvips-42.dll）加载进内存并锁住文件，
-    // 不停止的话覆盖解压必然失败（Windows os error 32）。
-    // 进程归属以启动时记录的 PID 为准，不根据端口结束未知程序。
-    if has_owned_process() {
-        log::info!("Stopping running Harness service before installation");
-        stop(app_handle.clone()).await?;
-    }
-    // 只停本应用持有的进程还不够：历史崩溃/强杀残留的孤儿 Harness 实例
-    // （不在 .harness.pid 标记中）同样从 dependencies/dsh 启动、占用目录文件
-    // 句柄，会导致更新切换目录失败（INSTALL_BACKUP_FAILED, os error 32）。
-    // 按命令行路径精确清扫所有本应用 dsh 安装目录启动的进程。
-    // 枚举/结束涉及 powershell 枚举与 taskkill（同步阻塞），移出 Tokio 线程。
-    {
-        let handle = app_handle.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            terminate_stale_harness_processes(&handle);
-        })
-        .await
-        .map_err(|e| format!("STOP_FAILED: {e}"))?;
-    }
-
-    let window = app_handle
-        .get_webview_window("main")
-        .ok_or("Failed to get main window")?;
-    log::debug!("Main window obtained");
-    let tasks: Vec<Box<dyn download::Installable>> = vec![
-        Box::new(download::Nodejs),
-        Box::new(download::Pnpm),
-        Box::new(download::Dsh),
-    ];
-    // 每项均有下载/解压两个阶段，按实际平台任务数计算，避免进度提前到 100%。
-    let mut tracker = download::ProgressTracker::new(&window, tasks.len() * 2);
-    log::info!("Task list created, {} tasks total", tasks.len());
-
-    for (index, task) in tasks.iter().enumerate() {
-        log::debug!("Processing task {}/{}", index + 1, tasks.len());
-        // 已安装但版本/commit 与最新 release 不一致时强制重新下载。
-        // 版本优先（与 resolve_update 的判定完全一致）：dsh 的 rc 发布会复用
-        // 同一 git commit（record_commit 不变），只比 commit 会把 rc.8 之于
-        // rc.7 误判为"已最新"而跳过下载——日志表现为"All installation tasks
-        // completed"但实际什么都没下载，重启后仍是旧版，且前端丢掉更新提示。
-        let outdated = index == 2
-            && dsh_latest.as_ref().is_some_and(|info| {
-                let installed_version = config::get_dsh_version(app_handle);
-                let latest_version = download::parse_version_from_tag(&info.tag);
-                // 版本号可解析且不同 → 必须更新；版本不可解析时退回同一发布判定
-                let version_differs =
-                    match (installed_version.as_deref(), latest_version.as_deref()) {
-                        (Some(a), Some(b)) => a != b,
-                        _ => false,
-                    };
-                // 「同一发布」判定与 resolve_update 完全一致：记录 tag 与最新 tag
-                // 相同、或记录 commit 与 release 的任一合法标识（完整 SHA / build-id）
-                // 一致。限流期安装会把 build-id 写进记录，API 恢复后解析出的完整
-                // SHA 与之不等但仍是同一 release，不能据此误判为过期而重下。
-                version_differs
-                    || !download::record_matches_latest_release(
-                        config::get_dsh_pkg_commit(app_handle).as_deref(),
-                        config::get_dsh_pkg_tag(app_handle).as_deref(),
-                        info,
-                    )
-            });
-        if task.check_installed(app_handle) && !outdated {
-            log::debug!(
-                "Task {} already installed and up to date, skipping",
-                index + 1
-            );
-            tracker.skip_phases(2);
-            continue;
-        }
-
-        log::info!("Task {} not installed, starting installation", index + 1);
-
-        // 官方 GitHub Release 只提供源码归档，不提供可直接运行的完整依赖包。
-        // dsh 任务按 release tag 映射到完全相同版本的官方 npm 包，由捆绑 pnpm
-        // 校验 npm integrity 并安装官方依赖闭包。
-        if index == 2 {
-            if dsh_latest.is_none() {
-                dsh_latest = Some(download::fetch_latest_dsh_pkg_info().await?);
-            }
-            let info = dsh_latest
-                .as_ref()
-                .ok_or_else(|| "DSH_RELEASE_NOT_FOUND: no official release found".to_string())?;
-            tracker.start_phase(
-                "download",
-                &format!("{} {}", config::i18n::t("install.downloading"), task.title()),
-            );
-            tracker.update(
-                100.0,
-                format!("已解析官方 Release：{}", info.tag),
-                format!("Resolved official DeepSeek Harness release {}", info.tag),
-            );
-            tracker.end_phase();
-            tracker.start_phase(
-                "extract",
-                &format!("{} {}", config::i18n::t("install.extracting"), task.title()),
-            );
-            let version = download::parse_version_from_tag(&info.tag)
-                .ok_or_else(|| "DSH_TAG_INVALID: unsupported official tag".to_string())?;
-            crate::service::core::install_global_core(app_handle, &version).await?;
-            tracker.end_phase();
-            dsh_updated = true;
-            config::set_dsh_pkg_commit(app_handle, info.commit.clone());
-            config::set_dsh_pkg_tag(app_handle, info.tag.clone());
-            continue;
-        }
-
-        // 1. 下载
-        tracker.start_phase(
-            "download",
-            &format!(
-                "{} {}",
-                config::i18n::t("install.downloading"),
-                task.title()
-            ),
-        );
-        let url = task.get_download_url()?;
-        let name = url.rsplit('/').next().unwrap_or("").to_string();
-        // 取文件名用于解压类型判定；下载 URL 正常必含 '/'，但这里不 panic，
-        // 防御性兜底为空串（后续 ensure_extract 会因无法判定类型而报错返回，
-        // 不再让进程崩溃）。
-        log::debug!("File name: {}", name);
-        // pnpm 随安装包附带（resources/pnpm），优先离线读取；资源缺失或校验
-        // 失败时才退回联网下载，保证旧安装包/开发环境仍可工作。
-        let bundled = match index {
-            1 => read_bundled_pnpm(app_handle, &tracker),
-            _ => None,
-        };
-        let buffer = match bundled {
-            Some(buffer) => buffer,
-            None => {
-                let urls = vec![url];
-                log::debug!("Download URL: {}", urls.join(" -> "));
-                let buffer = download::download_file_from_sources(&tracker, urls).await?;
-                log::info!("Download completed, file size: {} bytes", buffer.len());
-                let expected_digest = match index {
-                    0 => download::fetch_node_sha256(task.get_download_url()?.as_str()).await?,
-                    1 => config::PNPM_SHA256.to_string(),
-                    _ => return Err("INSTALL_TASK_INVALID: unknown install task".to_string()),
-                };
-                download::verify_sha256(&buffer, &expected_digest)?;
-                log::info!("Download integrity verified for task {}", index + 1);
-                buffer
-            }
-        };
-        tracker.end_phase();
-
-        // 2. 解压
-        tracker.start_phase(
-            "extract",
-            &format!("{} {}", config::i18n::t("install.extracting"), task.title()),
-        );
-        let dest = task.get_install_path(app_handle);
-        log::debug!("Installation path: {:?}", dest);
-        download::ensure_extract(&tracker, name, buffer, dest).await?;
-        log::info!("Extraction completed");
-        tracker.end_phase();
-
-    }
-
-    log::info!("All installation tasks completed");
-    tracker.update(
-        100.0,
-        config::i18n::t("install.done"),
-        "All tasks completed".into(),
-    );
-
-    Ok(dsh_updated)
 }
 
 /// 无持有进程时应返回给前端的探测信号。

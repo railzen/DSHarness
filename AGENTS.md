@@ -3,7 +3,8 @@
 DeepSeek Harness desktop (Tauri 2 + React 19), embeds the Harness UI served at `http://127.0.0.1:3080`.
 
 - **端口隔离**：release 默认 `3080`，debug（`pnpm tauri dev` / `cargo build`）默认 `3081`，由 `config::setting::default_port()` 用 `cfg!(debug_assertions)` 区分，避免开发时与已运行的桌面端争用端口。
-- **数据隔离（核心共用、数据不共用）**：node/`dependencies/dsh`/`dependencies/pnpm` 为共用核心（AppData）；debug 构建的 `$DSH_HOME` 默认为 `~/.dsh.dev`（`config::runtime::get_dsh_data_path` 用 `cfg!(debug_assertions)` 区分）且 store 用独立文件 `.store.dev.dat`（`config::setting::store_dat_file_name`），避免开发版与生产版会话/档案/端口状态互相污染，也防止 dev 版热重启把 release 的服务进程杀掉（`service/workflow::terminate_stale_harness_processes` 在 debug 下为 no-op，改由 `.dsh.dev/.harness.pid` 精确回收）。debug 构建不迁移旧数据（`service/migrate`）、不注册/注销 PATH、不写烘焙 DSH_HOME 的 `dsh` shim（`service/cli`）。
+- **离线内置运行时**：Windows x64 安装器按 perMachine 安装到 Program Files。Node、DSH、MinGit、PowerShell 在 `resources/bundle`，界面使用系统 WebView2；由 `scripts/prepare-runtime.ts` 在构建机准备，版本与摘要锁定在 `scripts/runtime`。用户电脑不执行 npm 安装、不下载或切换核心；更新只能运行完整桌面安装包。
+- **数据隔离**：程序资源只读，设置/日志仍在用户 AppData，release `$DSH_HOME` 默认为 `~/.dsh`，debug 为 `~/.dsh.dev` 且 store 为 `.store.dev.dat`。debug 读取源码 `src-tauri/resources/bundle`，不修改生产资源或用户 PATH。
 - **上游插件边界**：桌面端不提供插件市场、预装、升级、卸载或修复功能，只保留 DeepSeek 官方 Release 对应的原生上游插件。
 
 - Prioritize using customized components from src/components, hero-ui.
@@ -20,7 +21,7 @@ DeepSeek Harness desktop (Tauri 2 + React 19), embeds the Harness UI served at `
 - **Backend**: Rust / Tauri 2 (`src-tauri/src/`)
   - `bridge/cmd.rs`: Tauri commands (register in `lib.rs` `generate_handler!`)
   - `config/`: constants, paths (`runtime.rs`), settings (`setting.rs`), i18n & theme
-  - `service/download/`: Node/Dsh/pnpm download & extract (`Installable` trait)
+  - `scripts/prepare-runtime.ts`: build-time offline runtime preparation
   - `service/workflow/`: process lifecycle (Windows no-window: `win_spawn.rs`)
   - `service/cli/`: `dsh`/`pnpm` shims + PATH registration (`mod.rs`/`shim.rs`/`path.rs`/`core.rs`)
   - `service/scheduler/` + `task/`: health check & polling
@@ -222,19 +223,18 @@ export function FooComponent(props: FooProps) {
    - Kill the process tree when stopping services (`taskkill /T /F`) to avoid DLL lock on update.
    - Broadcast `WM_SETTINGCHANGE` after writing PATH; tell users to reopen terminals.
 5. **CLI shim (`service/cli`)**:
-   - Scripts at Win `%LOCALAPPDATA%\deepseek-harness\bin`, Unix `~/.local/bin`.
-   - Prefer local Node (v22.15+ / v23.8+ / v24+), fallback to bundled Node; mind escaping (`%`→`%%`, `'`→`'\''`).
-   - Shim text must be English-only (cmd/ps1 parse by code page, Chinese breaks).
-   - pnpm shim: forward user-installed pnpm first, else bundled node `dependencies/pnpm/bin/pnpm.cjs`.
-   - Install skips when bundled installed **or** user pnpm on PATH (`Pnpm::check_installed`).
+   - `resources/bundle/bin/dsh.cmd` 在构建时生成，安装器统一维护。
+   - 固定调用内置 Node 和 DSH；不再探测或更新系统 Node/npm/pnpm。
+   - 运行时开关仅注册/注销用户 PATH，不创建、删除或覆盖 Program Files 中的文件。
+   - Shim text must be English-only (cmd parses by code page).
 6. **Cross-platform/Tests**: Unix-only code gets `#[cfg_attr(windows, allow(dead_code))]`; unit tests in `#[cfg(test)] mod tests`, skip gracefully when restricted.
 7. **Deps/Docs**: no heavy deps, prefer existing `windows-sys`; README minimal, en/zh synced.
 
 ## Pitfalls
 
-- `dsh` CLI is a Node script (`dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`); CLI integration is **shim + PATH**. pnpm is also JS (`dependencies/pnpm/bin/pnpm.cjs`, npm tarball).
-- AppData layout（核心共用）：`runtime/node.exe`、`dependencies/dsh/`、`dependencies/pnpm/`、`.store.dat` / `.store.dev.dat`（后者为 debug）；服务日志 `logs/dsh-web.log`（debug 为 `logs/dsh-web.dev.log`）；`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
-- Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; `cli::ensure` runs after install.
+- `dsh` CLI 入口为 `resources/bundle/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js`；Node 为 `resources/bundle/node/node.exe`。
+- 运行时只读；AppData 仅存 `.store.dat` / `.store.dev.dat`、日志等用户数据，`$DSH_HOME` 在用户主目录（release `~/.dsh`，debug `~/.dsh.dev`）。
+- Service args: `node bin.js --profile web --host 127.0.0.1 --port <setting.port>`; CLI PATH registration is optional.
 
 ## Summary
 

@@ -1,30 +1,41 @@
-//! Harness 核心管理。
-//!
-//! 核心来源：
-//! - `local`：用户通过 CLI（npm/pnpm 全局安装）自行安装的 dsh，安装目录与
-//!   配置（`$DSH_HOME`）都不归桌面端管理；
-//! - `app`：桌面端按官方 Release tag 管理的 Harness 多版本副本。激活版本固定
-//!   位于 `dependencies/dsh`（既有代码全部依赖该路径），通过「核心」面板下载的
-//!   历史版本存放在 `dependencies/dsh-<tag>` 槽位，切换时两个目录互换。
-//!
-//! 启动优先级（需求）：本地核心存在时优先使用本地核心；未检测到才走预打包。
-//! 用户在「核心」面板可显式切回预打包；显式选择持久化在 store 设置
-//! （`active_core`），`None` = 自动（本地优先）。
-//!
-//! 本地核心更新通过其包管理器 CLI 完成（npm `update -g` / pnpm `add -g`），
-//! 不触碰用户安装本身之外的文件。
-//!
-//! 模块划分（参考 `service/cli/`、`service/download/`）：
-//! - [`local`]：本地核心发现（PATH/全局安装目录探测、包目录解析、更新本地核心）
-//! - [`source`]：核心来源与活动入口（`CoreSource` / `HarnessCore` / 活动核心）
-//! - [`version`]：预打包核心多版本管理（列出 / 切换 / 下载 / 卸载）
+//! 核心只随桌面安装包交付，不探测或修改用户的全局 npm 环境。
+use crate::config;
+use serde::Serialize;
+use std::path::PathBuf;
+use tauri::AppHandle;
 
-mod local;
-mod source;
-mod version;
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessCore {
+    pub id: String,
+    pub source: String,
+    pub version: String,
+    pub path: String,
+    pub dir: String,
+    pub present: bool,
+    pub active: bool,
+}
 
-pub use local::{install_global_core, local_core_package_dir, uninstall_global_core, update_local_core};
-// 以下重导出为对外公开 API（部分项当前链路未直接引用，属有意保留，见模块头）。
-#[allow(unused_imports)]
-pub use source::{active_dsh_binary, active_source, active_version, CoreSource, HarnessCore};
-pub use version::{download_version, list, remove_version, set_active};
+/// 固定使用安装器管理的资源，不受旧设置或 PATH 影响。
+pub fn active_dsh_binary(app: &AppHandle) -> PathBuf {
+    config::get_dsh_binary_path(app)
+}
+pub fn active_version(app: &AppHandle) -> Option<String> {
+    config::get_dsh_version(app)
+}
+
+/// 仅读取本地清单，离线打开核心页不发起网络请求。
+pub async fn list(app: &AppHandle) -> Vec<HarnessCore> {
+    let path = active_dsh_binary(app);
+    vec![HarnessCore {
+        id: "app".into(),
+        source: "app".into(),
+        version: active_version(app).unwrap_or_default(),
+        path: path.to_string_lossy().into_owned(),
+        dir: config::get_dsh_install_path(app)
+            .to_string_lossy()
+            .into_owned(),
+        present: path.is_file(),
+        active: true,
+    }]
+}

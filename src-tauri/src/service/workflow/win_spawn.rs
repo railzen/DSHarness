@@ -333,6 +333,30 @@ mod tests {
     }
 
     #[test]
+    fn spawn_preserves_node_script_path_with_spaces() {
+        let node = find_node_on_path().expect("node.exe not found for the test");
+        let root = std::env::temp_dir().join(format!(
+            "dsh win spawn path with spaces {}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("print argv.js");
+        std::fs::write(&script, "process.stdout.write(process.argv[2]);").unwrap();
+
+        let args = vec![script.as_os_str().to_os_string(), OsString::from("probe")];
+        let (stdout, _stderr) =
+            spawn_with_hidden_console(&node, &args, Some(&root), &HashMap::new()).unwrap();
+
+        let mut output = String::new();
+        use std::io::Read;
+        let mut reader = stdout;
+        reader.read_to_string(&mut output).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(output, "probe");
+    }
+
+    #[test]
     fn spawned_process_gets_hidden_console() {
         let script = "$code='using System;using System.Runtime.InteropServices;public class C{[DllImport(\"kernel32.dll\")]public static extern IntPtr GetConsoleWindow();[DllImport(\"user32.dll\")]public static extern bool IsWindowVisible(IntPtr h);}';Add-Type -TypeDefinition $code;$h=[C]::GetConsoleWindow();if($h -eq [IntPtr]::Zero){'NO_CONSOLE'}else{'HAS_CONSOLE_VISIBLE='+[C]::IsWindowVisible($h)}";
 

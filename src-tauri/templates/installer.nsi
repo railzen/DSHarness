@@ -491,6 +491,8 @@ FunctionEnd
 {{#each languages}}
 !insertmacro MUI_LANGUAGE "{{this}}"
 {{/each}}
+LangString bundledRuntimeLocked ${LANG_ENGLISH} "Please close Deepseek Harness and its command-line tools, then run the installer again."
+LangString bundledRuntimeLocked ${LANG_SIMPCHINESE} "请关闭 Deepseek Harness 及其命令行工具，然后重新运行安装包。"
 !insertmacro MUI_RESERVEFILE_LANGDLL
 {{#each language_files}}
   !include "{{this}}"
@@ -536,7 +538,7 @@ Function .onInit
       StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
     !endif
 
-    Call RestorePreviousInstallLocation
+    ; Keep the per-machine Program Files location for bundled runtimes.
   ${EndIf}
 
 
@@ -657,6 +659,18 @@ Section WebView2
   ${EndIf}
 SectionEnd
 
+!macro StopBundledProcesses
+  ; Stop only processes whose executable belongs to this installation. This also
+  ; handles orphan Node/Git/PowerShell children when an offline upgrade is opened
+  ; directly, without going through the application's update action.
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "DSH_INSTALL_ROOT", w "$INSTDIR") i.r0'
+  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -Command "$$root = [IO.Path]::GetFullPath($$env:DSH_INSTALL_ROOT).TrimEnd([char]92) + [char]92; Get-CimInstance Win32_Process | Where-Object { $$_.Name -in @('node.exe','pwsh.exe','bash.exe','git.exe','msedgewebview2.exe') -and $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$root, [StringComparison]::OrdinalIgnoreCase) -and $$_.ProcessId -ne $$PID } | ForEach-Object { taskkill /PID $$_.ProcessId /T /F | Out-Null }"`
+  Pop $0
+  Pop $1
+  System::Call 'Kernel32::SetEnvironmentVariableW(w "DSH_INSTALL_ROOT", p 0) i.r0'
+  Sleep 1000
+!macroend
+
 Section Install
   SetOutPath $INSTDIR
 
@@ -665,6 +679,18 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
+  !insertmacro StopBundledProcesses
+  ; A full bundle replaces the previous dependency tree; obsolete modules must
+  ; not survive an upgrade. Never remove the user's profiles or conversations.
+  RMDir /r "$INSTDIR\resources\bundle"
+  RMDir /r "$INSTDIR\resources\webview2"
+  IfFileExists "$INSTDIR\resources\bundle\*.*" runtime_locked
+  IfFileExists "$INSTDIR\resources\webview2\*.*" runtime_locked runtime_ready
+  runtime_locked:
+    MessageBox MB_ICONSTOP "$(bundledRuntimeLocked)"
+    Abort
+  runtime_ready:
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -802,6 +828,7 @@ Section Uninstall
   !endif
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro StopBundledProcesses
 
   ; Delete the app directory and its content from disk
   ; Copy main executable

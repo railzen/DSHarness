@@ -1,5 +1,5 @@
-import { ArrowRotateRight, ArrowUpRightFromSquare, ChevronRight, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
-import { Button, Chip, Description, Input, Link, ListBox, Select, Spinner, Surface, Switch } from '@heroui/react'
+import { ArrowRotateRight, ArrowUpRightFromSquare, Copy, Folder, Power, TrashBin } from '@gravity-ui/icons'
+import { Button, Chip, Description, Input, ListBox, Select, Spinner, Surface, Switch } from '@heroui/react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { invoke } from '@tauri-apps/api/core'
 import { useState } from 'react'
@@ -42,7 +42,6 @@ export interface AppConfig {
 export function ConfigDebug() {
   const { t, i18n } = useTranslation()
   const { serviceRunning, busyAction } = useStore(store.harness)
-  const { updateInfo } = useStore(store.harnessUpdater)
 
   // 端口编辑态：用户尚未输入时为 undefined，由 `data?.port ?? 3080` 提供初值。
   // 初值不写入 state（避免 queryFn 副作用 / effect 同步），渲染与保存时统一
@@ -252,12 +251,6 @@ export function ConfigDebug() {
           <Info term={t('ui.current_version')}>{info?.app_version ?? '-'}</Info>
           <Info term={t('ui.dsh_version')}>
             <span>{info?.dsh_version ?? '-'}</span>
-            <If cond={updateInfo}>
-              <Link className="ml-2 text-[10px] text-accent" onClick={store.harnessUpdater.showToast}>
-                {t('menu.new_version')}
-                <ChevronRight className="scale-75" />
-              </Link>
-            </If>
 
           </Info>
           <Info term={t('ui.node_version')}>{info?.node_version ? `v${info.node_version}` : '-'}</Info>

@@ -516,7 +516,6 @@ mod security_tests {
 pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         crate::bridge::install_dependencies,
-        crate::bridge::check_dsh_update,
         crate::bridge::launch_harness,
         crate::bridge::shutdown_harness,
         crate::bridge::restart_harness,
@@ -526,11 +525,6 @@ pub fn handler() -> impl Fn(Invoke<Wry>) -> bool + Send + Sync + 'static {
         crate::bridge::set_active_profile,
         crate::bridge::remove_profile,
         crate::bridge::get_cores,
-        crate::bridge::set_active_core,
-        crate::bridge::download_core,
-        crate::bridge::remove_core,
-        crate::bridge::update_local_core,
-        crate::bridge::uninstall_global_core,
         crate::bridge::proxy_health_check,
         crate::bridge::get_runtime_info,
         crate::bridge::runtime_ready,

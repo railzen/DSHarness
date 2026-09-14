@@ -25,11 +25,7 @@ pub fn allowed_roots(app_handle: &AppHandle) -> Vec<PathBuf> {
     }
     let dsh_home = crate::config::get_dsh_data_path(app_handle);
     roots.push(dsh_home);
-    // 本地核心（用户通过 CLI 安装）的包目录：由后端检测得到的可信路径，
-    // 允许「核心」面板的「打开目录」打开它（否则会因不在任何允许根内被拒）。
-    if let Some(dir) = crate::service::core::local_core_package_dir(app_handle) {
-        roots.push(dir);
-    }
+    roots.push(crate::config::get_bundle_dir(app_handle));
     roots
 }
 

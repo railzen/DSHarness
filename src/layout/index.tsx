@@ -6,7 +6,6 @@ import { useDshTheme } from '../hooks/use-dsh-theme'
 import { store } from '../store'
 import { DesktopUpdater } from './components/desktop-updater'
 import { DownloadToast } from './components/download-toast-trigger'
-import { HarnessUpdater } from './components/harness-updater'
 import { Webview } from './components/webview'
 import '../i18n'
 /**
@@ -50,9 +49,6 @@ export function App() {
   return (
     <div className="flex h-screen w-screen">
       <Webview />
-      <If cond={status === 'ready'}>
-        <HarnessUpdater />
-      </If>
       <If cond={status === 'ready'}>
         <DownloadToast />
       </If>

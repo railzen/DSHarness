@@ -16,3 +16,6 @@ skills
 .serena
 source/
 .gitmodules
+
+src-tauri/resources/bundle
+src-tauri/resources/webview2

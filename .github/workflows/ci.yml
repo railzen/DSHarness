@@ -70,7 +70,7 @@ jobs:
         # Linux 用与 release workflow 相同的 ubuntu-22.04 + 同一套 apt 包，
         # 保证首次跑 CI 就能编译（tauri 的 webkit/appindicator 原生依赖对齐已知可用环境）。
         # macOS 用官方矩阵的 macos-14（Apple Silicon）。
-        os: [ubuntu-22.04, macos-14, windows-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -92,6 +92,15 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Prepare offline runtime
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm prepare:runtime
+          pnpm test:offline
       - name: Run tests
         run: cargo test --all-features --locked
         working-directory: src-tauri

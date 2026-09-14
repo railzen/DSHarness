@@ -1,14 +1,13 @@
 {
   "name": "deepseek-harness-desktop",
   "type": "module",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "packageManager": "pnpm@10.28.2",
-  "description": "Desktop application for DeepSeek Harness (dsh) — one-click local install and launch, no Node.js setup required.",
+  "description": "Desktop application for DeepSeek Harness (dsh) \u2014 one-click local install and launch, no Node.js setup required.",
   "scripts": {
-    "dev": "tsx scripts/fetch-pnpm.ts && vite",
-    "build": "tsx scripts/fetch-pnpm.ts && tsc && vite build",
-    "fetch:pnpm": "tsx scripts/fetch-pnpm.ts",
+    "dev": "tsx scripts/prepare-runtime.ts && vite",
+    "build": "tsx scripts/prepare-runtime.ts && tsx scripts/test-offline-runtime.ts && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "release": "bumpp --pr",
@@ -17,7 +16,9 @@
     "knip": "knip",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
-    "icons": "tauri icon public/favicon.svg && tsx scripts/rebuild-macos-icon.ts"
+    "icons": "tauri icon public/favicon.svg && tsx scripts/rebuild-macos-icon.ts",
+    "prepare:runtime": "tsx scripts/prepare-runtime.ts",
+    "test:offline": "tsx scripts/test-offline-runtime.ts"
   },
   "dependencies": {
     "@gravity-ui/icons": "^2.21.0",

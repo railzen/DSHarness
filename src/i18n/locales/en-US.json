@@ -137,5 +137,7 @@
   "config.profiles": "Profiles",
   "config.harness": "Harness",
   "buttons.cancel": "Cancel",
-  "buttons.confirm": "Confirm"
+  "buttons.confirm": "Confirm",
+  "core.bundled_hint": "DSH and its runtime are bundled. Run a full desktop installer to upgrade or repair.",
+  "core.bundled_version": "Bundled version: {{version}}"
 }

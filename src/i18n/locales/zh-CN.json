@@ -137,5 +137,7 @@
   "config.profiles": "档案",
   "config.harness": "核心",
   "buttons.cancel": "取消",
-  "buttons.confirm": "确定"
+  "buttons.confirm": "确定",
+  "core.bundled_hint": "DSH 和运行环境随安装包内置，升级或修复请运行新版完整安装包。",
+  "core.bundled_version": "内置版本：{{version}}"
 }

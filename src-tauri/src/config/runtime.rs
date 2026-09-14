@@ -6,8 +6,6 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use super::constants::*;
 use super::format::get_dsh_service_url;
-use super::utils::search_node_binary;
-use super::{detect_region, Region};
 
 /// 获取 App Data 基础目录
 pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
@@ -17,89 +15,10 @@ pub fn get_base_dir<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
         .expect("Failed to resolve app data directory")
 }
 
-/// Node.js 官方/镜像下载前缀：国内走 npmmirror，其他直连 nodejs.org
-fn node_base_url(region: Region) -> &'static str {
-    match region {
-        Region::Domestic => NODE_MIRROR_BASE_URL,
-        Region::Overseas => NODE_BASE_URL,
-    }
-}
-
-/// Node.js 官方发行包文件名（按平台与架构）
-///
-/// 抽成纯函数以便单元测试覆盖所有平台（与宿主操作系统无关），
-/// 生产代码用 `env::consts::OS` / `env::consts::ARCH` 调用。
-fn node_pkg_filename(os: &str, arch: &str) -> Result<String, String> {
-    match (os, arch) {
-        ("macos", "aarch64") => Ok(format!("node-{}-darwin-arm64.tar.gz", NODE_VERSION)),
-        ("macos", "x86_64") => Ok(format!("node-{}-darwin-x64.tar.gz", NODE_VERSION)),
-        ("windows", _) => Ok(format!("node-{}-win-x64.zip", NODE_VERSION)),
-        ("linux", "x86_64") => Ok(format!("node-{}-linux-x64.tar.gz", NODE_VERSION)),
-        ("linux", "aarch64") => Ok(format!("node-{}-linux-arm64.tar.gz", NODE_VERSION)),
-        _ => Err(format!("Unsupported platform: {} {}", os, arch)),
-    }
-}
-
-/// Node.js 运行时下载地址
-pub fn get_node_download_url() -> Result<String, String> {
-    let filename = node_pkg_filename(env::consts::OS, env::consts::ARCH)?;
-    Ok(format!(
-        "{}/{}/{}",
-        node_base_url(detect_region()),
-        NODE_VERSION,
-        filename
-    ))
-}
-
 /// 为任意 GitHub Release 资产 URL 生成 ghfast.top 镜像兜底地址
 /// （透传原 URL，下载内容一致，仍可做 SHA-256 完整性校验）。
 pub fn mirror_download_url(asset_url: &str) -> String {
     format!("{DSH_MIRROR_PREFIX}{asset_url}")
-}
-
-/// 在 PATH 及常见安装目录中查找 node 可执行文件（不校验版本）
-fn find_local_node_binary() -> Option<PathBuf> {
-    let bin_name = if cfg!(windows) { "node.exe" } else { "node" };
-
-    let path_dirs: Vec<PathBuf> =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .collect();
-
-    // macOS 上从 Finder/launchd 启动时 PATH 可能不完整，补充常见安装目录
-    #[cfg(target_os = "macos")]
-    let dirs: Vec<PathBuf> = {
-        let mut dirs = path_dirs;
-        dirs.extend([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-        ]);
-        dirs
-    };
-
-    #[cfg(not(target_os = "macos"))]
-    let dirs = path_dirs;
-
-    for dir in dirs {
-        let candidate = dir.join(bin_name);
-        if candidate.is_file() && is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .map(|meta| meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool {
-    true
 }
 
 /// 运行 `node --version` 并捕获输出
@@ -125,62 +44,18 @@ fn node_version_output(node: &Path) -> Option<std::process::Output> {
     }
 }
 
-/// 获取指定 Node.js 二进制的版本号（例如 "22.22.0"）
-fn get_node_version_of(node: &Path) -> Option<String> {
-    let output = node_version_output(node)?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let version = stdout.trim().trim_start_matches('v');
-    if version.is_empty() {
-        None
-    } else {
-        Some(version.to_string())
-    }
-}
-
-/// 检测本地是否存在版本兼容的 Node.js 环境，返回其二进制路径
-pub fn get_local_node_path() -> Option<PathBuf> {
-    let node = find_local_node_binary()?;
-    let version = get_node_version_of(&node)?;
-    is_supported_node_version(&version).then_some(node)
-}
-
-/// Node.js 二进制路径
-///
-/// 优先级：本地版本兼容的 Node.js 环境 > 已安装的捆绑运行时
-pub fn get_node_binary_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    if let Some(local_node) = get_local_node_path() {
-        log::debug!("Using local Node.js: {}", local_node.display());
-        return local_node;
-    }
-
-    let runtime_dir = get_node_install_path(app_handle);
-    // 使用 cfg 宏在编译时确定文件名
-    let (rel_path, bin_name) = if cfg!(windows) {
-        ("", "node.exe")
-    } else {
-        ("bin", "node")
-    };
-    let direct_path = runtime_dir.join(rel_path).join(bin_name);
-    if direct_path.exists() {
-        direct_path
-    } else {
-        // 只有在直接路径不存在时才进行开销较大的递归搜索
-        search_node_binary(&runtime_dir, bin_name).unwrap_or(direct_path)
-    }
+/// 固定使用内置 Node，不回退到用户 PATH 或 AppData 中的旧运行时。
+pub fn get_node_binary_path(app: &tauri::AppHandle) -> PathBuf {
+    get_node_install_path(app).join("node.exe")
 }
 
 pub fn get_node_install_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    get_base_dir(app_handle).join("runtime")
+    get_bundle_dir(app_handle).join("node")
 }
 
 /// Harness 发行版安装目录
 pub fn get_dsh_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_base_dir(app_handle)
-        .join("dependencies")
-        .join(DSH_CORE_DIR)
+    get_bundle_dir(app_handle).join(DSH_CORE_DIR)
 }
 
 /// dsh CLI 入口
@@ -188,58 +63,9 @@ pub fn get_dsh_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_dsh_install_path(app_handle).join(DSH_ENTRY_RELATIVE)
 }
 
-/// pnpm 安装目录
-pub fn get_pnpm_install_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_base_dir(app_handle)
-        .join("dependencies")
-        .join(PNPM_CORE_DIR)
-}
-
-/// 捆绑 pnpm CLI 入口（纯 JS 发行，用 node 运行）
-pub fn get_pnpm_binary_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_pnpm_install_path(app_handle).join(PNPM_ENTRY_RELATIVE)
-}
-
-/// pnpm 官方/镜像下载前缀：国内走 npmmirror registry，其他直连 npmjs.org
-fn pnpm_base_url(region: Region) -> &'static str {
-    match region {
-        Region::Domestic => PNPM_MIRROR_BASE_URL,
-        Region::Overseas => PNPM_BASE_URL,
-    }
-}
-
-/// pnpm 官方 tarball 文件名（下载与随包资源共用同一名字）
-pub fn pnpm_tarball_name() -> String {
-    format!("pnpm-{PNPM_VERSION}.tgz")
-}
-
-/// pnpm 下载地址（纯 JS 发行，全平台同一 URL）
-pub fn get_pnpm_download_url() -> String {
-    format!(
-        "{}{}",
-        pnpm_base_url(detect_region()),
-        pnpm_tarball_name()
-    )
-}
-
-/// 安装包内随附的 pnpm tarball（`resources/pnpm/pnpm-<ver>.tgz`）。
-///
-/// 构建时由 `scripts/fetch-pnpm.ts` 放入 `src-tauri/resources/pnpm/`，
-/// 不存在（如本地开发未拉取）时返回 None，调用方退回联网下载。
-pub fn get_bundled_pnpm_tarball<R: Runtime>(app_handle: &AppHandle<R>) -> Option<PathBuf> {
-    let path = app_handle
-        .path()
-        .resource_dir()
-        .ok()?
-        .join("resources")
-        .join(PNPM_CORE_DIR)
-        .join(pnpm_tarball_name());
-    path.is_file().then_some(path)
-}
-
 /// Harness 发行版清单路径
 pub fn get_dsh_package_json_path<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
-    get_dsh_install_path(app_handle).join(DSH_MANIFEST_RELATIVE)
+    get_dsh_install_path(app_handle).join("node_modules/@deepseek-ai/dsh/package.json")
 }
 
 /// 用户主目录（Windows 取 `%USERPROFILE%`，Unix 取 `$HOME`）。
@@ -296,13 +122,8 @@ pub fn get_bundled_node_version() -> String {
     NODE_VERSION.trim_start_matches('v').to_string()
 }
 
-/// 当前实际使用的 Node.js 版本号（本地 Node 优先，其次捆绑运行时）
+/// 当前内置 Node.js 版本号
 pub fn get_active_node_version() -> String {
-    if let Some(local_node) = get_local_node_path() {
-        if let Some(version) = get_node_version_of(&local_node) {
-            return version;
-        }
-    }
     get_bundled_node_version()
 }
 
@@ -351,14 +172,9 @@ pub fn get_dsh_version<R: Runtime>(app_handle: &AppHandle<R>) -> Option<String> 
     let content = fs::read_to_string(&manifest_path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
     manifest
-        .get("dependencies")
-        .and_then(|deps| deps.get("@deepseek-ai/dsh"))
+        .get("version")
         .and_then(|value| value.as_str())
-        .map(|value| {
-            value
-                .trim_start_matches(['^', '~', '=', '>', '<'])
-                .to_string()
-        })
+        .map(str::to_owned)
 }
 
 /// 侧边栏展示的运行时/版本/诊断信息
@@ -389,102 +205,33 @@ pub fn runtime_info<R: Runtime>(app: &AppHandle<R>, port: u16) -> RuntimeInfo {
     }
 }
 
+/// 程序资源由安装器写入 Program Files；用户数据仍使用独立可写目录。
+pub fn get_bundle_dir<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
+    let root = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/bundle")
+    } else {
+        app.path()
+            .resource_dir()
+            .expect("BUNDLE_PATH_UNAVAILABLE")
+            .join("resources/bundle")
+    };
+    // Tauri 在 Windows 打包版中可能返回 `\\?\C:\...`。Node 24 把该
+    // verbatim 路径用作入口脚本时会错误地解析为 `C:`，因此交给 Node、PATH
+    // 和子进程前统一去掉该前缀；路径本身仍是同一个绝对目录。
+    dunce::simplified(&root).to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
-    fn node_base_url_switches_on_region() {
-        assert_eq!(node_base_url(Region::Overseas), NODE_BASE_URL);
-        assert_eq!(node_base_url(Region::Domestic), NODE_MIRROR_BASE_URL);
-    }
-
-    #[test]
-    fn mirror_url_prepends_ghfast_prefix() {
-        let asset = "https://github.com/railzen/deepseek-harness-win/releases/download/v1.0.0/deepseek-harness-win.exe";
+    fn simplified_bundle_path_removes_windows_verbatim_prefix() {
+        let path = PathBuf::from(r"\\?\C:\Program Files\Deepseek Harness\resources\bundle");
         assert_eq!(
-            mirror_download_url(asset),
-            format!("{DSH_MIRROR_PREFIX}{asset}")
+            dunce::simplified(&path),
+            Path::new(r"C:\Program Files\Deepseek Harness\resources\bundle")
         );
-    }
-
-    #[test]
-    fn pnpm_base_url_switches_on_region() {
-        assert_eq!(pnpm_base_url(Region::Overseas), PNPM_BASE_URL);
-        assert_eq!(pnpm_base_url(Region::Domestic), PNPM_MIRROR_BASE_URL);
-    }
-
-    #[test]
-    fn download_urls_keep_platform_filename_shape() {
-        // 无论哪个地域，URL 都以 https 开头并保留平台文件名（镜像只是换前缀）
-        let node = get_node_download_url().expect("node url");
-        assert!(node.starts_with("https://"));
-        let filename = node.rsplit('/').next().expect("node url filename");
-        assert!(filename.starts_with(&format!("node-{}", NODE_VERSION)));
-        assert!(filename.ends_with(".zip") || filename.ends_with(".tar.gz"));
-
-    }
-
-    #[test]
-    fn node_pkg_filename_covers_all_supported_platforms() {
-        // 与 nodejs.org dist 布局一致（纯函数测试，不受宿主操作系统限制）
-        let cases = [
-            // (os, arch, 期望文件名)
-            (
-                "linux",
-                "x86_64",
-                format!("node-{}-linux-x64.tar.gz", NODE_VERSION),
-            ),
-            (
-                "linux",
-                "aarch64",
-                format!("node-{}-linux-arm64.tar.gz", NODE_VERSION),
-            ),
-            (
-                "windows",
-                "x86_64",
-                format!("node-{}-win-x64.zip", NODE_VERSION),
-            ),
-            (
-                "windows",
-                "aarch64",
-                format!("node-{}-win-x64.zip", NODE_VERSION),
-            ),
-            (
-                "macos",
-                "aarch64",
-                format!("node-{}-darwin-arm64.tar.gz", NODE_VERSION),
-            ),
-            (
-                "macos",
-                "x86_64",
-                format!("node-{}-darwin-x64.tar.gz", NODE_VERSION),
-            ),
-        ];
-        for (os, arch, expected) in cases {
-            assert_eq!(
-                node_pkg_filename(os, arch).expect("supported platform"),
-                expected,
-                "os: {os}, arch: {arch}"
-            );
-        }
-    }
-
-    #[test]
-    fn node_pkg_filename_rejects_unsupported_platform() {
-        // 未知操作系统/架构必须返回带 "Unsupported platform" 前缀的错误
-        let unsupported = [
-            ("freebsd", "x86_64"),
-            ("linux", "riscv64"),
-            ("openbsd", "aarch64"),
-            ("macos", "riscv64"),
-        ];
-        for (os, arch) in unsupported {
-            let err = node_pkg_filename(os, arch).expect_err("unsupported platform");
-            assert!(
-                err.starts_with("Unsupported platform: "),
-                "os: {os}, arch: {arch}, err: {err}"
-            );
-        }
     }
 }

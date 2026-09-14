@@ -15,7 +15,6 @@ import { defineStore } from 'valtio-define'
 import { queryClient } from '@/config/client'
 import { containsInotifyLimitError, pickErrorLines } from '@/utils/log'
 import { pollReadiness } from '@/utils/readiness'
-import { harnessUpdater } from '../harness-updater'
 
 const MAX_RETRIES = 8
 const IFRAME_LOAD_TIMEOUT = 20000
@@ -444,10 +443,6 @@ export const harness = defineStore({
 
         if (token !== bootToken)
           return
-        // 已安装时后台静默检查新版，发现后提示用户
-        if (config.installed) {
-          void harnessUpdater.checkForUpdate()
-        }
       }
       catch (err) {
         if (token !== bootToken)

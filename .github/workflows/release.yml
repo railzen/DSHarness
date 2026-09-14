@@ -107,25 +107,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: macos-aarch64
-            platform: macos-latest
-            args: --target aarch64-apple-darwin
-            arch: aarch64
-          - id: macos-x86_64
-            platform: macos-latest
-            args: --target x86_64-apple-darwin
-            arch: x86_64
           - id: windows
             platform: windows-latest
-            # MSI(WiX) 只接受纯数字版本，见下方 "Prepare MSI version override" 步骤
-            args: --config release-msi-version.tmp.json
-          # Linux 打包跑在 ubuntu-22.04 而非 ubuntu-latest：
-          # 22.04 的 glibc/WebKitGTK 版本更老，产出的 .deb/.AppImage 才能在
-          # Ubuntu 22.04 及更高版本上运行；用 latest(24.04) 构建的产物会因依赖新
-          # 库而在 22.04 上装不上/跑不起来(issue #41)。
-          - id: linux
-            platform: ubuntu-22.04
-            args: ''
+            args: --bundles nsis
 
     runs-on: ${{ matrix.platform }}
     # 兜底：apt/网络偶发卡死时避免占用 runner 到 GitHub 默认的 6 小时上限
