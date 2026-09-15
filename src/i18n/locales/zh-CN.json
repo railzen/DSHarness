@@ -12,7 +12,7 @@
   "status.updating": "正在更新 DeepSeek Harness...",
   "status.error": "启动失败",
   "status.loading": "正在加载 DeepSeek Harness…",
-  "update.available": "发现 DSH 新版本 {{tag}}，是否立即更新？",
+  "update.available": "发现 DeepSeek Harness Desktop 新版本 {{tag}}，是否立即更新？",
   "update.now": "立即更新",
   "update.later": "稍后",
   "update.up_to_date": "已是最新版本",

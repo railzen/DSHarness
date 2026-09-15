@@ -109,17 +109,41 @@ jobs:
           path: .tmp/runtime-downloads
           key: runtime-windows-x64-${{ hashFiles('scripts/runtime/assets.json') }}
 
-      - name: Prepare release version override
+      - name: Sync desktop release version
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.versions.outputs.release_version }}
         run: |
-          @{ version = $env:RELEASE_VERSION } |
-            ConvertTo-Json -Compress |
-            Set-Content release-version.tmp.json -Encoding utf8NoBOM
+          node -e @'
+          const fs = require('node:fs')
+          const version = process.env.RELEASE_VERSION
+
+          for (const path of ['package.json', 'src-tauri/tauri.conf.json']) {
+            const value = JSON.parse(fs.readFileSync(path, 'utf8'))
+            value.version = version
+            fs.writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
+          }
+
+          const cargoPath = 'src-tauri/Cargo.toml'
+          const cargo = fs.readFileSync(cargoPath, 'utf8')
+          const updatedCargo = cargo.replace(
+            /^(\[package\][\s\S]*?^version\s*=\s*)"[^"]+"/m,
+            `$1"${version}"`,
+          )
+          if (updatedCargo === cargo)
+            throw new Error('Cargo package version was not updated')
+          fs.writeFileSync(cargoPath, updatedCargo)
+          '@
+
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = if ((Get-Content src-tauri/Cargo.toml -Raw) -match '(?m)^version\s*=\s*"([^"]+)"') { $Matches[1] }
+          if (@($packageVersion, $tauriVersion, $cargoVersion) -ne $env:RELEASE_VERSION) {
+            throw "Desktop version sync failed: package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion"
+          }
 
       - name: Build Windows NSIS installer
-        run: pnpm tauri build --bundles nsis --config release-version.tmp.json
+        run: pnpm tauri build --bundles nsis
 
       - name: Create checksum and release notes
         id: artifact

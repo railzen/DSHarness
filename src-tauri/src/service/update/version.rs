@@ -5,7 +5,7 @@
 
 use semver::Version;
 
-/// 当前桌面端版本号（来自 Cargo.toml / tauri.conf.json）
+/// 当前桌面端版本号（编译期来自 Cargo.toml）
 pub(super) fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
