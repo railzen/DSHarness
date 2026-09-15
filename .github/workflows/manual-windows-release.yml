@@ -1,0 +1,183 @@
+name: Manual Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dsh_version:
+        description: DSH version or npm dist-tag to bundle
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: manual-windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and release Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout latest default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve release and DSH versions
+        id: versions
+        shell: pwsh
+        env:
+          REQUESTED_DSH_VERSION: ${{ inputs.dsh_version }}
+        run: |
+          git fetch origin --tags --force
+
+          $versions = @(
+            git tag --list | ForEach-Object {
+              if ($_ -match '^v(\d+)\.(\d+)\.(\d+)$') {
+                [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+              }
+            }
+          )
+          if ($versions.Count -eq 0) {
+            throw 'No existing vMAJOR.MINOR.PATCH tag was found'
+          }
+
+          $latestVersion = $versions | Sort-Object -Descending | Select-Object -First 1
+          $releaseVersion = [version]::new(
+            $latestVersion.Major,
+            $latestVersion.Minor,
+            $latestVersion.Build + 1
+          ).ToString(3)
+          $releaseTag = "v$releaseVersion"
+          $existingTag = git ls-remote --tags origin "refs/tags/$releaseTag"
+          if ($existingTag) {
+            throw "Release tag already exists: $releaseTag"
+          }
+
+          $dshVersion = npm view "@deepseek-ai/dsh@$env:REQUESTED_DSH_VERSION" version --json | ConvertFrom-Json
+          if ($dshVersion -is [array]) {
+            $dshVersion = $dshVersion[-1]
+          }
+          if ($dshVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw "npm returned an invalid DSH version: $dshVersion"
+          }
+
+          "release_version=$releaseVersion" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "previous_tag=v$($latestVersion.ToString(3))" >> $env:GITHUB_OUTPUT
+          "dsh_version=$dshVersion" >> $env:GITHUB_OUTPUT
+          "source_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+          Write-Host "Release: $releaseTag; DSH: @deepseek-ai/dsh@$dshVersion"
+
+      - name: Lock latest DSH for this build
+        shell: pwsh
+        env:
+          DSH_VERSION: ${{ steps.versions.outputs.dsh_version }}
+        run: |
+          npm install --prefix scripts/runtime --package-lock-only --ignore-scripts --no-audit --no-fund --save-exact "@deepseek-ai/dsh@$env:DSH_VERSION"
+          $runtime = Get-Content scripts/runtime/package.json -Raw | ConvertFrom-Json
+          $lockedVersion = $runtime.dependencies.'@deepseek-ai/dsh'
+          if ($lockedVersion -ne $env:DSH_VERSION) {
+            throw "DSH lock mismatch: expected $env:DSH_VERSION, got $lockedVersion"
+          }
+
+      - name: Cache runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: .tmp/runtime-downloads
+          key: runtime-windows-x64-${{ hashFiles('scripts/runtime/assets.json') }}
+
+      - name: Prepare release version override
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.versions.outputs.release_version }}
+        run: |
+          @{ version = $env:RELEASE_VERSION } |
+            ConvertTo-Json -Compress |
+            Set-Content release-version.tmp.json -Encoding utf8NoBOM
+
+      - name: Build Windows NSIS installer
+        run: pnpm tauri build --bundles nsis --config release-version.tmp.json
+
+      - name: Create checksum and release notes
+        id: artifact
+        shell: pwsh
+        env:
+          DSH_VERSION: ${{ steps.versions.outputs.dsh_version }}
+          SOURCE_SHA: ${{ steps.versions.outputs.source_sha }}
+        run: |
+          $installers = @(Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+          }
+
+          $installer = $installers[0]
+          $digest = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = "$($installer.FullName).sha256"
+          "$digest  $($installer.Name)" | Set-Content $checksum -Encoding ascii
+
+          @(
+            '### 内置运行时'
+            ('- DSH 版本：`@deepseek-ai/dsh@{0}`' -f $env:DSH_VERSION)
+            ('- 源代码提交：`{0}`' -f $env:SOURCE_SHA)
+          ) | Set-Content release-notes.md -Encoding utf8NoBOM
+
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+          "sha256=$digest" >> $env:GITHUB_OUTPUT
+
+      # gh 使用 GITHUB_TOKEN 创建的 tag 不会再次触发 release.yml，避免重复打包。
+      - name: Create tag and GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.versions.outputs.release_tag }}
+          PREVIOUS_TAG: ${{ steps.versions.outputs.previous_tag }}
+          SOURCE_SHA: ${{ steps.versions.outputs.source_sha }}
+          INSTALLER: ${{ steps.artifact.outputs.installer }}
+          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+        run: |
+          $notes = Get-Content release-notes.md -Raw
+          gh release create $env:RELEASE_TAG $env:INSTALLER $env:CHECKSUM `
+            --target $env:SOURCE_SHA `
+            --title "DeepSeek Harness Desktop $env:RELEASE_TAG" `
+            --generate-notes `
+            --notes-start-tag $env:PREVIOUS_TAG `
+            --notes $notes
+
+      - name: Publish summary
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.versions.outputs.release_tag }}
+          DSH_VERSION: ${{ steps.versions.outputs.dsh_version }}
+          SHA256: ${{ steps.artifact.outputs.sha256 }}
+        run: |
+          @(
+            "## Windows release $env:RELEASE_TAG"
+            ''
+            "- Bundled DSH: ``@deepseek-ai/dsh@$env:DSH_VERSION``"
+            "- Installer SHA-256: ``$env:SHA256``"
+            "- Release: https://github.com/${{ github.repository }}/releases/tag/$env:RELEASE_TAG"
+          ) >> $env:GITHUB_STEP_SUMMARY
