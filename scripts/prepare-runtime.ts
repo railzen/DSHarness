@@ -45,7 +45,36 @@ function unzip(archive: string, destination: string) {
   run('tar.exe', ['-mxf', archive, '-C', destination])
 }
 
-const stamp = hash(Buffer.concat(['assets.json', 'package.json', 'package-lock.json'].map(name => readFileSync(join(spec, name)))))
+function pruneDshRuntime(directory: string) {
+  let removed = 0
+  const documentation = /^(?:readme|changelog|changes|history|contributing|code_of_conduct)(?:\..*)?$/i
+
+  function visit(current: string) {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) {
+        visit(path)
+        continue
+      }
+      if (entry.name.endsWith('.map') || entry.name.endsWith('.d.ts')
+        || entry.name.endsWith('.d.mts') || entry.name.endsWith('.d.cts')
+        || documentation.test(entry.name)) {
+        rmSync(path, { force: true })
+        removed++
+      }
+    }
+  }
+
+  visit(directory)
+  console.log(`Pruned ${removed} development-only DSH runtime files`)
+  return removed
+}
+
+const pruneVersion = 'types-maps-docs-v1'
+const stamp = hash(Buffer.concat([
+  ...['assets.json', 'package.json', 'package-lock.json'].map(name => readFileSync(join(spec, name))),
+  Buffer.from(pruneVersion),
+]))
 const marker = join(out, 'bundle.json')
 const required = ['node/node.exe', 'dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', 'git/cmd/git.exe', 'powershell/pwsh.exe', 'bin/dsh.cmd']
 const webview = join(root, 'src-tauri/resources/webview2')
@@ -81,6 +110,7 @@ mkdirSync(dsh, { recursive: true })
 for (const name of ['package.json', 'package-lock.json']) cpSync(join(spec, name), join(dsh, name))
 const node = join(out, 'node/node.exe')
 run(node, [join(out, 'node/node_modules/npm/bin/npm-cli.js'), 'ci', '--prefix', dsh, '--omit=dev', '--no-audit', '--no-fund'])
+const prunedFiles = pruneDshRuntime(join(dsh, 'node_modules'))
 
 // 保留 Node 发行版许可证；包管理器不作为用户运行时安装入口交付。
 rmSync(join(out, 'node/node_modules'), { recursive: true, force: true })
@@ -88,6 +118,6 @@ for (const name of ['npm', 'npm.cmd', 'npm.ps1', 'npx', 'npx.cmd', 'npx.ps1', 'c
   rmSync(join(out, 'node', name), { force: true })
 mkdirSync(join(out, 'bin'), { recursive: true })
 writeFileSync(join(out, 'bin/dsh.cmd'), '@echo off\r\nsetlocal\r\nset "PATH=%~dp0..\\node;%~dp0..\\powershell;%~dp0..\\git\\cmd;%PATH%"\r\n"%~dp0..\\node\\node.exe" "%~dp0..\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\nexit /b %errorlevel%\r\n')
-writeFileSync(marker, JSON.stringify({ stamp, assets, dsh: JSON.parse(readFileSync(join(dsh, 'package.json'), 'utf8')).dependencies['@deepseek-ai/dsh'] }, null, 2))
+writeFileSync(marker, JSON.stringify({ stamp, assets, dsh: JSON.parse(readFileSync(join(dsh, 'package.json'), 'utf8')).dependencies['@deepseek-ai/dsh'], pruneVersion, prunedFiles }, null, 2))
 console.log('Offline runtime prepared')
 
