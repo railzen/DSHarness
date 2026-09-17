@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
@@ -25,10 +25,16 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetProcessId, CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT,
-    PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
+    CreateProcessW, GetProcessId, ResumeThread, TerminateProcess, CREATE_NEW_CONSOLE,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTF_USESHOWWINDOW,
+    STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -50,7 +56,7 @@ pub fn spawn_with_hidden_console(
     Ok((stdout, stderr))
 }
 
-/// 启动由桌面端持有的 Harness 进程，同时返回 PID 与进程句柄。
+/// 启动由桌面端持有的 Harness，返回进程和不可继承的 Job 句柄。
 ///
 /// PID 用于只结束本应用创建的进程树；句柄由调用方等待并关闭，避免进程退出后
 /// PID 被系统复用时误伤其他程序。
@@ -59,17 +65,34 @@ pub fn spawn_with_hidden_console_owned(
     args: &[OsString],
     current_dir: Option<&Path>,
     envs: &HashMap<String, String>,
-) -> io::Result<(File, File, u32, HANDLE)> {
-    let (stdout, stderr, handle) =
-        spawn_with_hidden_console_tracked(program, args, current_dir, envs)?;
-    let pid = unsafe { GetProcessId(handle) };
-    if pid == 0 {
-        unsafe {
-            CloseHandle(handle);
+) -> io::Result<(File, File, u32, OwnedHandle, OwnedHandle)> {
+    let job = unsafe {
+        let raw = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if raw.is_null() {
+            return Err(io::Error::last_os_error());
         }
+        let job = OwnedHandle::from_raw_handle(raw);
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            raw,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            std::mem::size_of_val(&limits) as u32,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        job
+    };
+    let (stdout, stderr, handle) =
+        spawn_with_hidden_console_inner(program, args, current_dir, envs, Some(&job))?;
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let pid = unsafe { GetProcessId(handle.as_raw_handle()) };
+    if pid == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((stdout, stderr, pid, handle))
+    Ok((stdout, stderr, pid, handle, job))
 }
 
 /// 同 [`spawn_with_hidden_console`]，但额外返回进程句柄，供调用方等待进程
@@ -79,6 +102,17 @@ pub fn spawn_with_hidden_console_tracked(
     args: &[OsString],
     current_dir: Option<&Path>,
     envs: &HashMap<String, String>,
+) -> io::Result<(File, File, HANDLE)> {
+    spawn_with_hidden_console_inner(program, args, current_dir, envs, None)
+}
+
+/// 受管进程先暂停，加入 Job 后再运行，避免后代在归属登记前逃逸。
+fn spawn_with_hidden_console_inner(
+    program: &Path,
+    args: &[OsString],
+    current_dir: Option<&Path>,
+    envs: &HashMap<String, String>,
+    job: Option<&OwnedHandle>,
 ) -> io::Result<(File, File, HANDLE)> {
     unsafe {
         // 1. 创建 stdout / stderr 匿名管道（写端可继承，交给子进程）
@@ -159,7 +193,9 @@ pub fn spawn_with_hidden_console_tracked(
             std::ptr::null(),
             std::ptr::null(),
             1, // bInheritHandles
-            CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+            CREATE_NEW_CONSOLE
+                | CREATE_UNICODE_ENVIRONMENT
+                | if job.is_some() { CREATE_SUSPENDED } else { 0 },
             env_block.as_ptr() as *const core::ffi::c_void,
             current_dir_wide
                 .as_ref()
@@ -169,15 +205,35 @@ pub fn spawn_with_hidden_console_tracked(
             &mut process_info,
         );
 
+        let create_error = if created == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
         // 无论成功与否，父进程都要关闭自己持有的写端和临时句柄
         CloseHandle(stdout_write);
         CloseHandle(stderr_write);
         CloseHandle(stdin_handle);
 
-        if created == 0 {
+        if let Some(error) = create_error {
             CloseHandle(stdout_read);
             CloseHandle(stderr_read);
-            return Err(io::Error::last_os_error());
+            return Err(error);
+        }
+
+        if let Some(job) = job {
+            if AssignProcessToJobObject(job.as_raw_handle(), process_info.hProcess) == 0
+                || ResumeThread(process_info.hThread) == u32::MAX
+            {
+                let error = io::Error::last_os_error();
+                // 登记失败时进程尚未运行，直接终止，禁止留下无管理的后台实例。
+                TerminateProcess(process_info.hProcess, 1);
+                CloseHandle(process_info.hThread);
+                CloseHandle(process_info.hProcess);
+                CloseHandle(stdout_read);
+                CloseHandle(stderr_read);
+                return Err(error);
+            }
         }
 
         // 进程句柄不再需要时由调用方负责关闭（tracked 调用方等待退出后关闭；
@@ -269,6 +325,120 @@ fn quote_arg(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 使用真实 Node 后代验证 Job 回收，避免只检查标志位却遗漏进程继承。
+    fn check_owned_tree_cleanup(root_exits: bool, terminate_explicitly: bool) {
+        use std::io::BufRead;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+
+        let Some(node) = find_node_on_path() else {
+            eprintln!("跳过进程树测试：未找到 Node");
+            return;
+        };
+        let script = format!(
+            "const c=require('child_process').spawn(process.execPath,['-e',\"console.log(process.pid);setTimeout(()=>process.exit(0),30000)\"],{{stdio:['ignore','inherit','inherit'],detached:true,windowsHide:true}});c.unref();{}",
+            if root_exits { "" } else { "setTimeout(()=>process.exit(0),30000);" }
+        );
+        let args = vec![OsString::from("-e"), OsString::from(script)];
+        let (stdout, _stderr, _pid, process, job) =
+            spawn_with_hidden_console_owned(&node, &args, None, &HashMap::new()).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .unwrap();
+        let child_pid: u32 = line.trim().parse().expect("后代应成功启动并输出 PID");
+        let child = unsafe {
+            let raw = OpenProcess(PROCESS_SYNCHRONIZE, 0, child_pid);
+            assert!(
+                !raw.is_null(),
+                "无法打开后代句柄: {}",
+                io::Error::last_os_error()
+            );
+            OwnedHandle::from_raw_handle(raw)
+        };
+        if root_exits {
+            assert_eq!(
+                unsafe { WaitForSingleObject(process.as_raw_handle(), 5_000) },
+                0
+            );
+        }
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.as_raw_handle(), 0) },
+            258
+        );
+        if terminate_explicitly {
+            assert_ne!(unsafe { TerminateJobObject(job.as_raw_handle(), 1) }, 0);
+        } else {
+            drop(job);
+        }
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 5_000) },
+            0
+        );
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.as_raw_handle(), 5_000) },
+            0
+        );
+    }
+
+    #[test]
+    fn closing_owned_job_terminates_entire_tree() {
+        check_owned_tree_cleanup(false, false);
+    }
+
+    #[test]
+    fn closing_owned_job_after_root_exit_terminates_descendants() {
+        check_owned_tree_cleanup(true, false);
+    }
+
+    #[test]
+    fn terminating_owned_job_terminates_entire_tree() {
+        check_owned_tree_cleanup(false, true);
+    }
+
+    #[test]
+    fn owned_job_supports_bundled_powershell_pty() {
+        use std::io::Read;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+        let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/bundle");
+        let node = bundle.join("node/node.exe");
+        let pwsh = bundle.join("powershell/pwsh.exe");
+        let pty = bundle.join("dsh/node_modules/node-pty");
+        if !node.is_file() || !pwsh.is_file() || !pty.is_dir() {
+            eprintln!("跳过 PTY 测试：未准备离线运行时");
+            return;
+        }
+        let script = format!(
+            "const pty=require({});const timer=setTimeout(()=>process.exit(2),20000);const t=pty.spawn({},['-NoLogo','-NoProfile','-Command',\"Write-Output JOB_PTY_OK\"],{{cols:80,rows:24,env:process.env}});let text='';t.onData(d=>text+=d);t.onExit(e=>{{clearTimeout(timer);console.log(text);process.exit(e.exitCode===0&&text.includes('JOB_PTY_OK')?0:3);}});",
+            serde_json::to_string(&pty.to_string_lossy()).unwrap(),
+            serde_json::to_string(&pwsh.to_string_lossy()).unwrap(),
+        );
+        let (mut stdout, mut stderr, _, process, job) = spawn_with_hidden_console_owned(
+            &node,
+            &[OsString::from("-e"), OsString::from(script)],
+            None,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 25_000) },
+            0
+        );
+        let mut code = 0;
+        assert_ne!(
+            unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) },
+            0
+        );
+        // 先回收 ConPTY 可能持有的管道写端，再读取全部输出。
+        drop(job);
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        stderr.read_to_string(&mut output).unwrap();
+        assert_eq!(code, 0, "PTY 在 Job 内运行失败: {output}");
+    }
 
     #[test]
     fn env_key_match_is_case_insensitive() {

@@ -23,13 +23,30 @@ static LAUNCH_GUARD: AtomicBool = AtomicBool::new(false);
 /// 「PID 清空」与「句柄关闭」之间不存在跨原子竞态（WARN-6）。历史上 PID/句柄
 /// 分两个 `Atomic*` 存储，`stop` 读 PID 与监视线程清句柄之间有微窗口可能导致
 /// 漏杀或重复 close。
-#[derive(Clone, Copy)]
 struct OwnedProcess {
     pid: u32,
     /// Windows 进程句柄（原始 HANDLE 转 usize 存储，避免 `*mut c_void` 非 Send）。
     /// 只在 Windows 存在；Unix 无句柄概念。
     #[cfg(windows)]
     handle: usize,
+    /// Job 由桌面端独占持有，关闭后回收仍存活的全部后代。
+    #[cfg(windows)]
+    job: usize,
+}
+
+#[cfg(windows)]
+impl Drop for OwnedProcess {
+    fn drop(&mut self) {
+        unsafe {
+            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+            if self.job != 0 {
+                CloseHandle(self.job as HANDLE);
+            }
+            if self.handle != 0 {
+                CloseHandle(self.handle as HANDLE);
+            }
+        }
+    }
 }
 
 fn owned_process_lock() -> &'static Mutex<Option<OwnedProcess>> {
@@ -48,15 +65,14 @@ fn set_owned_process(pid: u32) {
 
 /// 若调用方 owns 该进程（Windows 额外存句柄），记录之。
 #[cfg(windows)]
-fn set_owned_process_with_handle(pid: u32, handle: usize) {
+fn set_owned_process_with_handle(pid: u32, handle: usize, job: usize) {
     let mut guard = owned_process_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(OwnedProcess { pid, handle });
+    *guard = Some(OwnedProcess { pid, handle, job });
 }
 
-/// 原子取出持有的进程（PID+句柄一起）。Whoever takes it is responsible for
-/// closing the Windows handle. 无条件取出（停止/退出路径）。
+/// 原子取出持有的进程，Windows 句柄在记录释放时统一关闭。
 fn take_owned_process() -> Option<OwnedProcess> {
     owned_process_lock()
         .lock()
@@ -240,21 +256,28 @@ fn terminate_owned_process() {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        const WAIT_TIMEOUT_CODE: u32 = 0x0000_0102;
+        let mut owned = owned;
         let handle = owned.handle as windows_sys::Win32::Foundation::HANDLE;
-        if handle.is_null() {
-            return;
-        }
-        // 真实句柄已结束说明 PID 可能已复用，此时绝不调用 taskkill。
-        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT_CODE {
-            unsafe { CloseHandle(handle) };
-            return;
-        }
-        kill_pid_tree(owned.pid);
+        let job = owned.job as windows_sys::Win32::Foundation::HANDLE;
+        // 关机期间不能再启动 taskkill；即使根进程已退出，也须清理 Job 内后代。
         unsafe {
-            WaitForSingleObject(handle, 5_000);
-            CloseHandle(handle);
+            if !job.is_null() && TerminateJobObject(job, 1) == 0 {
+                log::error!(
+                    "HARNESS_STOP_FAILED: pid={}, error={}",
+                    owned.pid,
+                    std::io::Error::last_os_error()
+                );
+            }
+            // 关闭 Job 是失败兜底，且必须先于等待进程结束。
+            if !job.is_null() {
+                CloseHandle(job);
+                owned.job = 0;
+            }
+            if !handle.is_null() {
+                WaitForSingleObject(handle, 5_000);
+            }
         }
     }
 
@@ -376,7 +399,7 @@ pub fn has_owned_process() -> bool {
 /// - 若当前状态仍是 Running，回落到 Stopped——否则进程已经没了、状态却永远
 ///   显示「运行中」，前端按钮/横幅会长期处于错误语义（WARN-5）。
 ///
-/// 返回被取出的进程记录（含 Windows 句柄），取到者负责 `CloseHandle`——保证
+/// 返回被取出的进程记录（含 Windows 句柄），释放记录时自动关闭——保证
 /// 「取走进程」与「关闭句柄」同属一个调用者，杜绝重复 close。幂等：多次调用
 /// （tick 与监视线程并发）只会生效一次，后续调用返回 None。
 fn on_owned_process_exit(pid: u32) -> Option<OwnedProcess> {
@@ -904,16 +927,21 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                 Some(&dsh_home),
                 &envs,
             )
-            .map(|(stdout, stderr, pid, handle)| {
+            .and_then(|(stdout, stderr, pid, handle, job)| {
+                use std::os::windows::io::{AsRawHandle, IntoRawHandle};
+                // 等待线程独占副本，停止线程关闭登记句柄时不会破坏正在进行的等待。
+                let monitor_handle = handle.try_clone()?;
                 // PID 与句柄作为整体一次登记，与退出清理（take 一并取出）配对
-                let handle_value = handle as usize;
-                set_owned_process_with_handle(pid, handle_value);
+                set_owned_process_with_handle(
+                    pid,
+                    handle.into_raw_handle() as usize,
+                    job.into_raw_handle() as usize,
+                );
                 std::thread::spawn(move || unsafe {
-                    use windows_sys::Win32::Foundation::CloseHandle;
                     use windows_sys::Win32::System::Threading::{
                         GetExitCodeProcess, WaitForSingleObject, INFINITE,
                     };
-                    let process_handle = handle_value as windows_sys::Win32::Foundation::HANDLE;
+                    let process_handle = monitor_handle.as_raw_handle();
                     WaitForSingleObject(process_handle, INFINITE);
                     // 记录退出码：启动即崩溃（插件冲突等）时前端据此快速失败，
                     // 退出码也便于诊断问题
@@ -926,16 +954,10 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
                     // 进程确已退出：清空持有 PID 并把 Status 从 Running 回落为
                     // Stopped（原有实现只清 PID、状态永远停留在 Running）。
                     // 仅当该 PID 仍是当前登记才取出——旧监视线程不会误清新进程。
-                    // take 返回值里的句柄由本线程负责关闭（不会与
-                    // terminate_owned_process 重复 close——进程已 exit，
-                    // 通常是本线程取走）。
-                    let owned = on_owned_process_exit(pid);
-                    if let Some(owned) = owned {
-                        let h = owned.handle as windows_sys::Win32::Foundation::HANDLE;
-                        CloseHandle(h);
-                    }
+                    // 释放记录同时关闭 Job，根进程自行退出也不能留下孤儿后代。
+                    drop(on_owned_process_exit(pid));
                 });
-                (Some(stdout), Some(stderr), pid)
+                Ok((Some(stdout), Some(stderr), pid))
             })
         }
         #[cfg(not(windows))]
@@ -1007,7 +1029,7 @@ pub async fn launch(app_handle: tauri::AppHandle) -> Result<(), String> {
 pub async fn stop(app_handle: tauri::AppHandle) -> Result<(), String> {
     log::info!("Stopping Harness service...");
     // 重置启动守卫，确保后续 launch 可以重新拉起；仅结束持有的根进程树。
-    // 进程终止涉及 WaitForSingleObject（至多 5s）与 taskkill/kill 等同步阻塞
+    // 进程终止涉及 Job 回收和 Unix kill 等同步阻塞
     // 调用，移出 Tokio 执行线程避免卡住其他并发任务（WARN-7/P2-#20）。
     LAUNCH_GUARD.store(false, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(terminate_owned_process)
@@ -1239,7 +1261,11 @@ mod tests {
     /// 构造一个测试用 `OwnedProcess`（跨平台处理 Windows 句柄字段）。
     #[cfg(windows)]
     fn test_owned(pid: u32) -> OwnedProcess {
-        OwnedProcess { pid, handle: 0 }
+        OwnedProcess {
+            pid,
+            handle: 0,
+            job: 0,
+        }
     }
     #[cfg(not(windows))]
     fn test_owned(pid: u32) -> OwnedProcess {
