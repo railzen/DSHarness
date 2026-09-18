@@ -2,7 +2,7 @@
 ;   https://github.com/tauri-apps/tauri/blob/tauri-bundler-v2.9.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
 ;
 ; Keep it in sync with upstream tauri-bundler upgrades, but preserve the
-; Deepseek Harness Desktop customizations (marked with "Deepseek Harness Desktop:").
+; DSCode customizations (marked with "DSCode:").
 ; The single customization so far is in PageReinstall: a cross-version UPGRADE is
 ; applied in place — the redundant "uninstall / don't uninstall" prompt is skipped
 ; entirely (no uninstall, keep user data). The standalone "add/remove programs"
@@ -270,7 +270,7 @@ Function PageReinstall
 
   ; Skip showing the page if passive, or if we are UPGRADING.
   ;
-  ; Deepseek Harness Desktop: a cross-version UPGRADE ($R0 = 1) is the in-app
+  ; DSCode: a cross-version UPGRADE ($R0 = 1) is the in-app
   ; update path, so the redundant "uninstall / don't uninstall" choice is skipped
   ; entirely and the new version updates in place (keeps user data). Mark
   ; $UpdateMode so the rest of the flow (PageLeaveReinstall, WebView2, shortcuts)
@@ -306,7 +306,7 @@ Function PageReinstall
     !endif
     ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
-    ; Deepseek Harness Desktop: default to the first radio (add/reinstall on a
+    ; DSCode: default to the first radio (add/reinstall on a
     ; same-version run, or "uninstall before installing" on a downgrade) unless
     ; the user already picked the second one. The cross-version UPGRADE case
     ; ($R0 = 1) never reaches this dialog — it is handled above by skipping
@@ -491,8 +491,8 @@ FunctionEnd
 {{#each languages}}
 !insertmacro MUI_LANGUAGE "{{this}}"
 {{/each}}
-LangString bundledRuntimeLocked ${LANG_ENGLISH} "Please close Deepseek Harness and its command-line tools, then run the installer again."
-LangString bundledRuntimeLocked ${LANG_SIMPCHINESE} "请关闭 Deepseek Harness 及其命令行工具，然后重新运行安装包。"
+LangString bundledRuntimeLocked ${LANG_ENGLISH} "Please close DSCode and its command-line tools, then run the installer again."
+LangString bundledRuntimeLocked ${LANG_SIMPCHINESE} "请关闭 DSCode 及其命令行工具，然后重新运行安装包。"
 !insertmacro MUI_RESERVEFILE_LANGDLL
 {{#each language_files}}
   !include "{{this}}"

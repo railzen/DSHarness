@@ -1,5 +1,5 @@
 name: 🚀 新功能建议
-description: 提议为 DeepSeek Harness 桌面端添加新功能
+description: 提议为 DSCode 桌面端添加新功能
 title: '`功能` | '
 body:
   - type: markdown
@@ -16,7 +16,7 @@ body:
     id: problem
     attributes:
       label: 请描述问题
-      description: 作为使用 DeepSeek Harness 的用户，我希望 **[目标 / 愿望]**，以便 **[收益]**。如果你打算为这个问题提交 PR，请在描述中告诉我们，谢谢。
+      description: 作为使用 DSCode 的用户，我希望 **[目标 / 愿望]**，以便 **[收益]**。如果你打算为这个问题提交 PR，请在描述中告诉我们，谢谢。
       placeholder: 描述问题
     validations:
       required: true

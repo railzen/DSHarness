@@ -1,6 +1,6 @@
 # Development Specification Document
 
-DeepSeek Harness desktop (Tauri 2 + React 19), embeds the Harness UI served at `http://127.0.0.1:3080`.
+DSCode desktop (Tauri 2 + React 19), embeds the Harness UI served at `http://127.0.0.1:3080`.
 
 - **端口隔离**：release 默认 `3080`，debug（`pnpm tauri dev` / `cargo build`）默认 `3081`，由 `config::setting::default_port()` 用 `cfg!(debug_assertions)` 区分，避免开发时与已运行的桌面端争用端口。
 - **离线内置运行时**：Windows x64 安装器按 perMachine 安装到 Program Files。Node、DSH、MinGit、PowerShell 在 `resources/bundle`，界面使用系统 WebView2；由 `scripts/prepare-runtime.ts` 在构建机准备，版本与摘要锁定在 `scripts/runtime`。用户电脑不执行 npm 安装、不下载或切换核心；更新只能运行完整桌面安装包。

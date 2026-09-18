@@ -1,10 +1,10 @@
-# DeepSeek Harness 桌面版
+# DSCode
 
 基于 Tauri 2 的 Windows x64 桌面封装，上游为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
 
 ## 安装与离线使用
 
-从 [Releases](https://github.com/railzen/deepseek-harness-win/releases) 下载完整 `.exe` 安装包，可复制到不连接外网的电脑安装。安装器需要管理员权限，默认安装到 `Program Files\Deepseek Harness`。
+从 [Releases](https://github.com/railzen/deepseek-harness-win/releases) 下载完整 `.exe` 安装包，可复制到不连接外网的电脑安装。安装器需要管理员权限，默认安装到 `Program Files\DSCode`。
 
 - 安装包内置固定版本的 DSH、Node.js、MinGit 和 PowerShell 7；无需预装 Node、npm、Git 或 PowerShell 7
 - 桌面界面使用系统 WebView2，以缩小安装包；Windows 11 通常已自带，缺失时需要先联网或由管理员离线部署 WebView2

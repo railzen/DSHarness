@@ -1,4 +1,4 @@
-Deepseek Harness Desktop — License Agreement
+DSCode — License Agreement
 
 This Software is licensed under the MIT License, supplemented by the
 Additional Terms (Non-Commercial Condition) below. The Additional Terms

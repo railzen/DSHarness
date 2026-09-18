@@ -186,7 +186,7 @@ jobs:
           $notes = Get-Content release-notes.md -Raw
           gh release create $env:RELEASE_TAG $env:INSTALLER $env:CHECKSUM `
             --target $env:SOURCE_SHA `
-            --title "DeepSeek Harness Desktop $env:RELEASE_TAG" `
+            --title "DSCode $env:RELEASE_TAG" `
             --generate-notes `
             --notes-start-tag $env:PREVIOUS_TAG `
             --notes $notes

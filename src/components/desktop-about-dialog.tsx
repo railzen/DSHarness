@@ -38,7 +38,7 @@ export function DesktopAboutDialog(props: DesktopAboutDialogProps) {
                 <img src="/favicon.svg" alt={t('about.title')} className="w-12 h-12 rounded-md" />
 
                 <div className="text-base font-semibold text-ink">
-                  {about?.powered_by ?? 'DeepSeek Harness Desktop'}
+                  {about?.powered_by ?? 'DSCode'}
                 </div>
                 <Description className="text-xs">
                   {t('about.powered_by', { name: about?.powered_by ?? 'Hairy & DeepSeek' })}

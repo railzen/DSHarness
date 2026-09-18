@@ -22,7 +22,7 @@ export type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
 export interface LoadableProps {
   /** 状态图标（@gravity-ui/icons 组件），仅失败态显示；加载态已有 spinner，不再叠加图标（官方 boot 页无图标） */
   icon?: IconComponent
-  /** wordmark 位文案，默认官网的 "HARNESS" */
+  /** wordmark 位文案，默认 i18n 的 `app.wordmark`（"DSCODE"） */
   title?: string
   /** hint 位文案，默认官网的 "Loading plugins…" */
   subtitle?: string

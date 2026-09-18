@@ -188,22 +188,22 @@ mod tests {
     #[test]
     fn arch_rank_matches_host_and_universal() {
         // 通用包任何架构都可用
-        assert_eq!(arch_rank("Deepseek.Harness.Desktop-universal.dmg"), 1);
+        assert_eq!(arch_rank("DSCode-universal.dmg"), 1);
         // 按编译目标分支断言，保证 CI 在任意架构上都能通过
         #[cfg(target_arch = "aarch64")]
         {
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"), 2);
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_x64.dmg"), 0);
+            assert_eq!(arch_rank("DSCode_0.6.6_aarch64.dmg"), 2);
+            assert_eq!(arch_rank("DSCode_0.6.6_x64.dmg"), 0);
         }
         #[cfg(target_arch = "x86_64")]
         {
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_x64.dmg"), 2);
+            assert_eq!(arch_rank("DSCode_0.6.6_x64.dmg"), 2);
             assert_eq!(
-                arch_rank("Deepseek.Harness.Desktop_0.6.6_amd64.AppImage"),
+                arch_rank("DSCode_0.6.6_amd64.AppImage"),
                 2
             );
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop-0.6.6-1.x86_64.rpm"), 2);
-            assert_eq!(arch_rank("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"), 0);
+            assert_eq!(arch_rank("DSCode-0.6.6-1.x86_64.rpm"), 2);
+            assert_eq!(arch_rank("DSCode_0.6.6_aarch64.dmg"), 0);
         }
         // 未携带架构信息的文件名作为兜底（0）
         assert_eq!(arch_rank("app.dmg"), 0);
@@ -248,24 +248,24 @@ mod tests {
         let mk = |name: &str| name.to_string();
         // aarch64 与 x64 并存（与真实发布资产命名一致）：选当前架构匹配的包
         let assets: Vec<String> = vec![
-            mk("Deepseek.Harness.Desktop_0.6.6_aarch64.dmg"),
-            mk("Deepseek.Harness.Desktop_0.6.6_x64.dmg"),
+            mk("DSCode_0.6.6_aarch64.dmg"),
+            mk("DSCode_0.6.6_x64.dmg"),
         ];
         let picked = pick_asset(&assets).unwrap();
         #[cfg(target_arch = "aarch64")]
-        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6_aarch64.dmg");
+        assert_eq!(picked, "DSCode_0.6.6_aarch64.dmg");
         #[cfg(target_arch = "x86_64")]
-        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6_x64.dmg");
+        assert_eq!(picked, "DSCode_0.6.6_x64.dmg");
         // 通用包优于与本机架构不匹配的包（用「非本机架构」的名字构造，任意架构成立）
         #[cfg(target_arch = "aarch64")]
-        let wrong = "Deepseek.Harness.Desktop_0.6.6_x64.dmg";
+        let wrong = "DSCode_0.6.6_x64.dmg";
         #[cfg(target_arch = "x86_64")]
-        let wrong = "Deepseek.Harness.Desktop_0.6.6_aarch64.dmg";
+        let wrong = "DSCode_0.6.6_aarch64.dmg";
         let assets: Vec<String> = vec![
             wrong.to_string(),
-            "Deepseek.Harness.Desktop_0.6.6-universal.dmg".to_string(),
+            "DSCode_0.6.6-universal.dmg".to_string(),
         ];
         let picked = pick_asset(&assets).unwrap();
-        assert_eq!(picked, "Deepseek.Harness.Desktop_0.6.6-universal.dmg");
+        assert_eq!(picked, "DSCode_0.6.6-universal.dmg");
     }
 }

@@ -228,10 +228,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn simplified_bundle_path_removes_windows_verbatim_prefix() {
-        let path = PathBuf::from(r"\\?\C:\Program Files\Deepseek Harness\resources\bundle");
+        let path = PathBuf::from(r"\\?\C:\Program Files\DSCode\resources\bundle");
         assert_eq!(
             dunce::simplified(&path),
-            Path::new(r"C:\Program Files\Deepseek Harness\resources\bundle")
+            Path::new(r"C:\Program Files\DSCode\resources\bundle")
         );
     }
 }

@@ -158,7 +158,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip("DSCode")
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -168,7 +168,7 @@ pub fn tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Deepseek Harness Desktop")
+        .tooltip("DSCode")
         .on_menu_event(move |app, event| handle_menu_event(app, &event))
         .on_tray_icon_event(move |tray, event| handle_tray_icon_event(tray, &event))
         .build(app)?;
@@ -349,7 +349,7 @@ pub fn build_main_window(app: &tauri::AppHandle<Wry>) -> tauri::Result<tauri::We
 
     let webview_builder =
         WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-            .title("Deepseek Harness Desktop")
+            .title("DSCode")
             // 显式绑定窗口图标，确保 Windows 11 无边框窗口在任务栏显示应用图标。
             .icon(app.default_window_icon().unwrap().clone())?
             .inner_size(1280.0, 840.0)

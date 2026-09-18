@@ -81,7 +81,7 @@ pub fn t(key: &str) -> String {
         "menu.settings" => ("设置…", "Settings…"),
         "menu.enter_fullscreen" => ("进入全屏幕", "Enter Full Screen"),
         "menu.exit_fullscreen" => ("退出全屏幕", "Exit Full Screen"),
-        "menu.about" => ("关于 Desktop", "About Desktop"),
+        "menu.about" => ("关于 DSCode", "About DSCode"),
         "menu.run_logs" => ("运行日志", "Run Logs"),
         "menu.check_update" => ("检查更新", "Check for Updates"),
         "menu.edit" => ("编辑", "Edit"),
